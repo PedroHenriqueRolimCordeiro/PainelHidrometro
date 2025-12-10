@@ -1,0 +1,11 @@
+# Configuração de Sincronização de Simuladores
+# Formato: /caminho/para/simulador:SHAID
+#
+# Exemplo:
+# /home/pedro/IdeaProjects/SimuladorHidrometro:1001
+# /home/joao/SimuladorHidrometro:1002
+# /home/maria/projeto-hidrometro:1003
+
+# Adicione seus simuladores abaixo:
+/home/pedro/IdeaProjects/SimuladorHidrometro:1001
+

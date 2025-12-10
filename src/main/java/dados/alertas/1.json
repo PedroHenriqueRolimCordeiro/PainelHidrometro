@@ -1,0 +1,12 @@
+{
+  "id": 1,
+  "numeroConta": "555-2025",
+  "cpfUsuario": "55555555555",
+  "consumoAtual": 19.51,
+  "limiteConfigurado": 10.0,
+  "dataHora": "2025-12-07T11:37:35.950815037",
+  "lido": false,
+  "emailEnviado": true,
+  "notificadoConcessionaria": false,
+  "mensagem": "ALERTA: Consumo excedido! Conta: 555-2025 | Consumo: 19,51 m³ | Limite: 10,00 m³"
+}

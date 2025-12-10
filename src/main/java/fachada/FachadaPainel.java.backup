@@ -1,0 +1,643 @@
+package fachada;
+
+import dto.AlertaDTO;
+import dto.ContaAguaDTO;
+import dto.UsuarioDTO;
+import modelo.enums.PerfilUsuario;
+import modelo.enums.TipoEstadoConta;
+import modelo.enums.TipoNotificacao;
+import modelo.enums.TipoOperacao;
+import subsistemas.alertas.SistemaAlertas;
+import subsistemas.comandos.GerenciadorComandos;
+import subsistemas.contas.GerenciadorContas;
+import subsistemas.log.SistemaLog;
+import subsistemas.monitoramento.LeitorSimuladoImpl;
+import subsistemas.monitoramento.MonitorConsumo;
+import subsistemas.notificacoes.GerenciadorNotificacoes;
+import subsistemas.persistencia.GerenciadorDados;
+import subsistemas.persistencia.PersistenciaArquivoImpl;
+import subsistemas.usuarios.GerenciadorUsuarios;
+
+import java.util.List;
+import java.util.Set;
+
+/**
+ * Fachada do Painel de Monitoramento de Hidrômetros.
+ * Implementa os padrões Facade e Singleton seguindo o estilo Marcos Brizeno.
+ *
+ * A FachadaPainel é o ponto único de acesso ao sistema, encapsulando todos os
+ * subsistemas e fornecendo uma interface simplificada para os clientes (CLI/GUI/API).
+ *
+ * PADRÃO SINGLETON (Marcos Brizeno):
+ * - Atributo instancia: private static
+ * - Construtor: protected (não pode ser public)
+ * - Método getInstancia(): public static synchronized (thread-safe)
+ *
+ * PADRÃO FACADE (Marcos Brizeno):
+ * - Subsistemas: protected (não são expostos)
+ * - Métodos públicos delegam para subsistemas
+ * - Cliente usa APENAS a Fachada, não os subsistemas diretamente
+ *
+        return comandos.getHistoricoLimitado(limite).stream()
+                .map(cmd -> cmd.getTimestamp() + " - " + cmd.getDescricao())
+                .collect(java.util.stream.Collectors.toList());
+ * @author Pedro Henrique
+ * @date 2025-12-08
+ */
+public class FachadaPainel {
+
+    // ========================================================================
+    // SINGLETON - Atributo estático para guardar a instância única
+    // ========================================================================
+    private static FachadaPainel instancia;
+
+    // ========================================================================
+    // FACADE - Subsistemas (protected conforme estilo Marcos Brizeno)
+    // ========================================================================
+    protected GerenciadorUsuarios usuarios;
+    protected GerenciadorContas contas;
+    protected MonitorConsumo monitor;
+    protected SistemaAlertas alertas;
+    protected GerenciadorNotificacoes notificacoes;
+    protected GerenciadorDados dados;
+    protected SistemaLog log;
+    protected GerenciadorComandos comandos;
+
+    // ========================================================================
+    // SINGLETON - Construtor PROTEGIDO (não pode ser público!)
+    // ========================================================================
+
+    /**
+     * Construtor protegido (estilo Marcos Brizeno).
+     * Inicializa todos os subsistemas do painel.
+     * Este construtor não pode ser público para garantir o padrão Singleton.
+     */
+    protected FachadaPainel() {
+        // Inicializar subsistemas na ordem de dependência
+
+        // 1. Log (primeiro para registrar inicializações)
+        this.log = SistemaLog.getInstancia();
+        log.info("═══════════════════════════════════════════════");
+        log.info("Iniciando Painel de Monitoramento de Hidrômetros");
+        log.info("═══════════════════════════════════════════════");
+
+        // 2. Persistência
+        this.dados = new GerenciadorDados(new PersistenciaArquivoImpl());
+        log.info("✓ Subsistema de Persistência inicializado");
+
+        // 3. Usuários (depende de dados)
+        this.usuarios = new GerenciadorUsuarios();
+        log.info("✓ Gerenciador de Usuários inicializado");
+
+        // 4. Contas (depende de dados e usuários)
+        this.contas = new GerenciadorContas();
+        log.info("✓ Gerenciador de Contas inicializado");
+
+        // 5. Monitoramento (depende de contas)
+        this.monitor = new MonitorConsumo(new LeitorSimuladoImpl(), contas);
+        log.info("✓ Monitor de Consumo inicializado (Bridge com LeitorSimuladoImpl)");
+
+        // 6. Notificações (Strategy + Factory) - precisa de fábrica e usuários
+        subsistemas.notificacoes.EnviadorEmail enviadorEmail =
+            new subsistemas.notificacoes.EnviadorEmail();
+        this.notificacoes = new GerenciadorNotificacoes(
+            new subsistemas.notificacoes.FabricaEstrategiaNotificacao(enviadorEmail),
+            usuarios
+        );
+        log.info("✓ Gerenciador de Notificações inicializado");
+
+        // 7. Alertas (depende de monitor, contas, dados e notificações - Observer)
+        this.alertas = new SistemaAlertas(monitor, contas, dados, notificacoes);
+        this.monitor.attach(alertas); // Registra observer
+        log.info("✓ Sistema de Alertas inicializado e registrado como Observer");
+
+        // 8. Comandos (Command pattern para undo/redo)
+        this.comandos = new GerenciadorComandos();
+        log.info("✓ Gerenciador de Comandos inicializado");
+
+        log.info("═══════════════════════════════════════════════");
+        log.info("Sistema PAiNEL SHA iniciado com sucesso!");
+        log.info("═══════════════════════════════════════════════");
+    }
+
+    // ========================================================================
+    // SINGLETON - Método estático público que retorna a instância
+    // ========================================================================
+
+    /**
+     * Retorna a instância única da FachadaPainel (Singleton thread-safe).
+     * Implementação lazy (instância criada sob demanda).
+     *
+     * @return Instância única da FachadaPainel
+     */
+    public static synchronized FachadaPainel getInstancia() {
+        if (instancia == null) {
+            instancia = new FachadaPainel();
+        }
+        return instancia;
+    }
+
+    // ========================================================================
+    // RF01 – CRUD DE USUÁRIOS
+    // ========================================================================
+
+    /**
+     * Cadastra um novo usuário no sistema.
+     *
+     * @param cpf CPF do usuário (identificador único)
+     * @param nome Nome completo do usuário
+     * @param email Email do usuário
+     * @param telefone Telefone do usuário
+     * @param endereco Endereço do usuário
+     * @param perfil Perfil de acesso (ADMIN ou OPERADOR)
+     */
+    public void cadastrarUsuario(String cpf, String nome, String email,
+                                 String telefone, String endereco, PerfilUsuario perfil) {
+        usuarios.cadastrar(cpf, nome, email, telefone, endereco, perfil);
+        log.info("Usuário cadastrado: " + nome + " (" + cpf + ") - Perfil: " + perfil);
+    }
+
+    /**
+     * Busca um usuário pelo CPF.
+     *
+     * @param cpf CPF do usuário
+     * @return DTO com dados do usuário ou null se não encontrado
+     */
+    public UsuarioDTO buscarUsuario(String cpf) {
+        return usuarios.buscar(cpf);
+    }
+
+    /**
+     * Lista todos os usuários cadastrados no sistema.
+     *
+     * @return Lista de DTOs com dados dos usuários
+     */
+    public List<UsuarioDTO> listarUsuarios() {
+        return usuarios.listarTodos();
+    }
+
+    /**
+     * Atualiza os dados de um usuário existente.
+     *
+     * @param cpf CPF do usuário
+     * @param nome Nome completo do usuário
+     * @param email Email do usuário
+     * @param telefone Telefone do usuário
+     * @param endereco Endereço do usuário
+     * @param perfil Perfil de acesso (ADMIN ou OPERADOR)
+     */
+    public void atualizarUsuario(String cpf, String nome, String email,
+                                  String telefone, String endereco, PerfilUsuario perfil) {
+        usuarios.atualizar(cpf, nome, email, telefone, endereco, perfil);
+        log.info("Usuário atualizado: " + nome + " (" + cpf + ")");
+    }
+
+    /**
+     * Remove um usuário do sistema.
+     *
+     * @param cpf CPF do usuário a ser removido
+     */
+    public void removerUsuario(String cpf) {
+        usuarios.remover(cpf);
+        log.info("Usuário removido: " + cpf);
+    }
+
+    // ========================================================================
+    // RF01 – CRUD DE CONTAS DE ÁGUA
+    // ========================================================================
+
+    /**
+     * Cria uma nova conta de água.
+        List<AlertaDTO> resultado = new java.util.ArrayList<>();
+        for (modelo.Alerta a : alertas.listarAlertasConta(numeroConta)) {
+            AlertaDTO dto = new AlertaDTO();
+            dto.setId(a.getId());
+            dto.setNumeroConta(a.getNumeroConta());
+            dto.setConsumoAtual(a.getConsumoAtual());
+            dto.setLimiteConfigurado(a.getLimiteConfigurado());
+            dto.setDataHora(a.getDataHora());
+            dto.setLido(a.isLido());
+            resultado.add(dto);
+        }
+        return resultado;
+    public void criarConta(String numeroConta, String cpfUsuario) {
+        contas.criar(numeroConta, cpfUsuario);
+        log.info("Conta criada: " + numeroConta + " - Usuário: " + cpfUsuario);
+    }
+
+    /**
+     * Busca uma conta de água pelo número.
+     *
+        List<AlertaDTO> resultado = new java.util.ArrayList<>();
+        for (modelo.Alerta a : alertas.listarAlertasPendentes()) {
+            AlertaDTO dto = new AlertaDTO();
+            dto.setId(a.getId());
+            dto.setNumeroConta(a.getNumeroConta());
+            dto.setConsumoAtual(a.getConsumoAtual());
+            dto.setLimiteConfigurado(a.getLimiteConfigurado());
+            dto.setDataHora(a.getDataHora());
+            dto.setLido(a.isLido());
+            resultado.add(dto);
+        }
+        return resultado;
+        return contas.buscar(numeroConta);
+    }
+
+    /**
+     * Lista todas as contas de água de um usuário específico.
+     *
+     * @param cpfUsuario CPF do usuário
+     * @return Lista de DTOs com dados das contas
+     */
+    public List<ContaAguaDTO> listarContasPorUsuario(String cpfUsuario) {
+        return contas.listarPorUsuario(cpfUsuario);
+    }
+
+    /**
+     * Atualiza os dados de uma conta existente.
+     *
+     * @param numeroConta Número da conta
+     * @param cpfUsuario CPF do novo proprietário (se aplicável)
+     */
+    public void atualizarConta(String numeroConta, String cpfUsuario) {
+        contas.atualizar(numeroConta, cpfUsuario);
+        log.info("Conta atualizada: " + numeroConta);
+    }
+
+    /**
+     * Remove uma conta do sistema.
+     *
+     * @param numeroConta Número da conta a ser removida
+     */
+    public void removerConta(String numeroConta) {
+        contas.remover(numeroConta);
+        log.info("Conta removida: " + numeroConta);
+    }
+
+    // ========================================================================
+    // RF01 – VÍNCULO DE SHA (Hidrômetros)
+    // ========================================================================
+
+    /**
+     * Vincula um hidrômetro (SHA) a uma conta de água.
+     * Um SHA só pode estar vinculado a uma conta ativa por vez.
+     * Operação reversível via Command pattern.
+     *
+     * @param numeroConta Número da conta
+     * @param idSHA ID do hidrômetro SHA a vincular
+     */
+    public void vincularSHAConta(String numeroConta, int idSHA) {
+        contas.vincularSHA(numeroConta, idSHA);
+        log.info("SHA " + idSHA + " vinculado à conta " + numeroConta);
+    }
+
+    /**
+     * Desvincula um hidrômetro (SHA) de uma conta de água.
+     * Operação reversível via Command pattern.
+     *
+     * @param numeroConta Número da conta
+     * @param idSHA ID do hidrômetro SHA a desvincular
+     */
+    public void desvincularSHAConta(String numeroConta, int idSHA) {
+        contas.desvincularSHA(numeroConta, idSHA);
+        log.info("SHA " + idSHA + " desvinculado da conta " + numeroConta);
+    }
+
+    /**
+     * Lista todos os hidrômetros (SHAs) vinculados a uma conta.
+     *
+     * @param numeroConta Número da conta
+     * @return Conjunto de IDs dos SHAs vinculados
+     */
+    public Set<Integer> listarSHAsDaConta(String numeroConta) {
+        return contas.listarSHAs(numeroConta);
+    }
+
+    // ========================================================================
+    // RF01 – GESTÃO DE ESTADOS DE CONTA (State Pattern)
+    // ========================================================================
+
+    /**
+     * Altera o estado de uma conta de água.
+     * Usa o padrão State para gerenciar transições de estado.
+     *
+     * @param numeroConta Número da conta
+     * @param novoEstado Novo estado da conta (ATIVA, SUSPENSA, INADIMPLENTE, CANCELADA)
+     */
+    public void alterarEstadoConta(String numeroConta, TipoEstadoConta novoEstado) {
+        contas.alterarEstado(numeroConta, novoEstado);
+        log.info("Estado da conta " + numeroConta + " alterado para: " + novoEstado);
+    }
+
+    /**
+     * Consulta o estado atual de uma conta.
+     *
+     * @param numeroConta Número da conta
+     * @return Objeto EstadoConta com comportamentos específicos do estado
+     */
+    public subsistemas.contas.state.EstadoConta consultarEstadoConta(String numeroConta) {
+        return contas.consultarEstado(numeroConta);
+    }
+
+    /**
+     * Verifica se uma conta pode realizar determinada operação.
+     * Delegação para o padrão State.
+     *
+     * @param numeroConta Número da conta
+     * @param operacao Tipo de operação a verificar
+     * @return true se a operação é permitida, false caso contrário
+     */
+    public boolean contaPodeRealizarOperacao(String numeroConta, TipoOperacao operacao) {
+        return contas.podeRealizarOperacao(numeroConta, operacao);
+    }
+
+    // ========================================================================
+    // RF02 – MONITORAMENTO & CONSUMO
+    // ========================================================================
+
+    /**
+     * Obtém o consumo atual de um hidrômetro (SHA) específico.
+     * Leitura feita EXCLUSIVAMENTE via imagem (saida/leitura_do_hidrometro_<ID>.jpg).
+     * Usa Bridge pattern para leitura (LeitorImplementador).
+     *
+     * @param idSHA ID do hidrômetro SHA
+     * @return Consumo atual em metros cúbicos (m³)
+     */
+    public double obterConsumoSHA(int idSHA) {
+        try {
+            double consumo = monitor.lerConsumoSHA(idSHA);
+            log.info("Consumo do SHA " + idSHA + ": " + consumo + " m³");
+            return consumo;
+        } catch (Exception e) {
+            log.error("Erro ao ler consumo do SHA " + idSHA, e);
+            throw new RuntimeException("Erro ao ler consumo do SHA " + idSHA, e);
+        }
+    }
+
+    /**
+     * Obtém o consumo total agregado de uma conta (soma de todos os SHAs).
+     * Leitura feita EXCLUSIVAMENTE via imagens dos SHAs vinculados.
+     *
+     * @param numeroConta Número da conta
+     * @return Consumo total em metros cúbicos (m³)
+     */
+    public double obterConsumoConta(String numeroConta) {
+        try {
+            double consumo = monitor.lerConsumoConta(numeroConta);
+            log.info("Consumo da conta " + numeroConta + ": " + consumo + " m³");
+            return consumo;
+        } catch (Exception e) {
+            log.error("Erro ao ler consumo da conta " + numeroConta, e);
+            throw new RuntimeException("Erro ao ler consumo da conta " + numeroConta, e);
+        }
+    }
+
+    /**
+     * Inicia o monitoramento contínuo de uma conta em intervalos configurados.
+     * A cada intervalo, lê as imagens dos SHAs, atualiza consumo e verifica alertas.
+     * Usa Observer pattern para notificar SistemaAlertas.
+     *
+     * @param numeroConta Número da conta
+     * @param intervaloSegundos Intervalo entre leituras em segundos
+     */
+    public void iniciarMonitoramentoConta(String numeroConta, int intervaloSegundos) {
+        monitor.iniciarMonitoramentoConta(numeroConta, intervaloSegundos);
+        log.info("Monitoramento iniciado para conta " + numeroConta +
+                 " (intervalo: " + intervaloSegundos + "s)");
+    }
+
+    /**
+     * Pausa o monitoramento de uma conta (mantém configuração).
+     * Usa State pattern para gerenciar estados do monitoramento.
+     *
+     * @param numeroConta Número da conta
+     */
+    public void pausarMonitoramentoConta(String numeroConta) {
+        monitor.pausarMonitoramento(numeroConta);
+        log.info("Monitoramento pausado para conta " + numeroConta);
+    }
+
+    /**
+     * Retoma o monitoramento pausado de uma conta.
+     *
+     * @param numeroConta Número da conta
+     */
+    public void retomarMonitoramentoConta(String numeroConta) {
+        monitor.retomarMonitoramento(numeroConta);
+        log.info("Monitoramento retomado para conta " + numeroConta);
+    }
+
+    /**
+     * Para o monitoramento contínuo de uma conta.
+     *
+     * @param numeroConta Número da conta
+     */
+    public void pararMonitoramentoConta(String numeroConta) {
+        monitor.pararMonitoramentoConta(numeroConta);
+        log.info("Monitoramento parado para conta " + numeroConta);
+    }
+
+    /**
+     * Consulta o estado atual do monitoramento de uma conta.
+     *
+     * @param numeroConta Número da conta
+     * @return Objeto EstadoMonitoramento (INICIADO, PAUSADO, PARADO, ERRO)
+     */
+    public subsistemas.monitoramento.state.EstadoMonitoramento consultarEstadoMonitoramento(String numeroConta) {
+        return monitor.getEstadoMonitoramento();
+    }
+
+    /**
+     * Verifica se o monitoramento de uma conta está ativo.
+     *
+     * @param numeroConta Número da conta
+     * @return true se o monitoramento está ativo, false caso contrário
+     */
+    public boolean isMonitoramentoAtivo(String numeroConta) {
+        return monitor.isMonitoramentoAtivo(numeroConta);
+    }
+
+    // ========================================================================
+    // RF03 – SISTEMA DE ALERTAS
+    // ========================================================================
+
+    /**
+     * Configura o limite máximo de consumo para geração de alertas.
+     * Operação reversível via Command pattern.
+     *
+     * @param numeroConta Número da conta
+     * @param volumeMaximo Volume máximo permitido em m³
+     */
+    public void configurarLimiteConsumo(String numeroConta, double volumeMaximo) {
+        alertas.configurarLimiteConsumo(numeroConta, volumeMaximo);
+        log.info("Limite de consumo configurado: " + numeroConta + " = " + volumeMaximo + " m³");
+    }
+
+    /**
+     * Habilita ou desabilita alertas por email para uma conta.
+     *
+     * @param numeroConta Número da conta
+     * @param habilitar true para habilitar, false para desabilitar
+     */
+    public void habilitarAlertaEmail(String numeroConta, boolean habilitar) {
+        String acao = habilitar ? "habilitado" : "desabilitado";
+        log.info("Alerta email " + acao + " para conta " + numeroConta);
+        // Delega para notificacoes
+    }
+
+    /**
+     * Habilita ou desabilita alertas para a concessionária.
+     *
+     * @param numeroConta Número da conta
+     * @param habilitar true para habilitar, false para desabilitar
+     */
+    public void habilitarAlertaConcessionaria(String numeroConta, boolean habilitar) {
+        String acao = habilitar ? "habilitado" : "desabilitado";
+        log.info("Alerta concessionária " + acao + " para conta " + numeroConta);
+        // Delega para notificacoes
+    }
+
+    /**
+     * Lista todos os alertas gerados para uma conta específica.
+     *
+     * @param numeroConta Número da conta
+     * @return Lista de DTOs com dados dos alertas
+     */
+    public List<AlertaDTO> listarAlertasConta(String numeroConta) {
+        List<AlertaDTO> resultado = new java.util.ArrayList<>();
+        for (modelo.Alerta a : alertas.listarAlertasConta(numeroConta)) {
+            AlertaDTO dto = new AlertaDTO();
+            dto.setId(a.getId());
+            dto.setNumeroConta(a.getNumeroConta());
+            dto.setConsumoAtual(a.getConsumoAtual());
+            dto.setLimiteConfigurado(a.getLimiteConfigurado());
+            dto.setDataHora(a.getDataHora());
+            dto.setLido(a.isLido());
+            resultado.add(dto);
+        }
+        return resultado;
+    }
+
+    /**
+     * Lista todos os alertas pendentes (não lidos) do sistema.
+     *
+     * @return Lista de DTOs com dados dos alertas pendentes
+     */
+    public List<AlertaDTO> listarAlertasPendentes() {
+        List<AlertaDTO> resultado = new java.util.ArrayList<>();
+        for (modelo.Alerta a : alertas.listarAlertasPendentes()) {
+            AlertaDTO dto = new AlertaDTO();
+            dto.setId(a.getId());
+            dto.setNumeroConta(a.getNumeroConta());
+            dto.setConsumoAtual(a.getConsumoAtual());
+            dto.setLimiteConfigurado(a.getLimiteConfigurado());
+            dto.setDataHora(a.getDataHora());
+            dto.setLido(a.isLido());
+            resultado.add(dto);
+        }
+        return resultado;
+    }
+
+    /**
+     * Marca um alerta como lido.
+     *
+     * @param idAlerta ID do alerta
+     */
+    public void marcarAlertaComoLido(int idAlerta) {
+        alertas.marcarAlertaComoLido(idAlerta);
+        log.info("Alerta " + idAlerta + " marcado como lido");
+    }
+
+    // ========================================================================
+    // RF03 – CONFIGURAÇÃO DE ESTRATÉGIAS DE NOTIFICAÇÃO (Strategy + Factory)
+    // ========================================================================
+
+    /**
+     * Configura as estratégias de notificação para uma conta.
+     * Usa Strategy pattern para permitir múltiplos canais de notificação.
+     * Usa Factory pattern para criar as estratégias.
+     *
+     * @param numeroConta Número da conta
+     * @param tipos Lista de tipos de notificação (EMAIL, SMS, PUSH, CONCESSIONARIA)
+     */
+    public void configurarEstrategiasNotificacao(String numeroConta, List<TipoNotificacao> tipos) {
+        notificacoes.configurarEstrategias(numeroConta, tipos);
+        log.info("Estratégias de notificação configuradas para conta " + numeroConta + ": " + tipos);
+    }
+
+    /**
+     * Habilita ou desabilita uma estratégia de notificação específica.
+     *
+     * @param numeroConta Número da conta
+     * @param tipo Tipo de notificação
+     * @param habilitar true para habilitar, false para desabilitar
+     */
+    public void habilitarEstrategia(String numeroConta, TipoNotificacao tipo, boolean habilitar) {
+        notificacoes.habilitarEstrategia(numeroConta, tipo, habilitar);
+        String acao = habilitar ? "habilitada" : "desabilitada";
+        log.info("Estratégia " + tipo + " " + acao + " para conta " + numeroConta);
+    }
+
+    /**
+     * Lista as estratégias de notificação ativas para uma conta.
+     *
+     * @param numeroConta Número da conta
+     * @return Lista de tipos de notificação ativos
+     */
+    public List<TipoNotificacao> listarEstrategiasAtivas(String numeroConta) {
+        return notificacoes.listarEstrategiasAtivas(numeroConta);
+    }
+
+    // ========================================================================
+    // RF04 – SISTEMA DE LOG
+    // ========================================================================
+
+    /**
+     * Obtém os últimos logs do sistema.
+     *
+     * @param limite Quantidade máxima de logs a retornar
+     * @return Lista com os logs mais recentes
+     */
+    public List<String> obterLogs(int limite) {
+        return log.obterLogs(limite);
+    }
+
+    // ========================================================================
+    // RF06 – OPERAÇÕES REVERSÍVEIS (Command Pattern)
+    // ========================================================================
+
+    /**
+     * Desfaz a última operação executada (undo).
+     * Operações que suportam undo:
+     * - Remover usuário/conta
+     * - Vincular/Desvincular SHA
+     * - Alterar estado da conta
+     */
+    public void desfazerUltimaOperacao() {
+        comandos.desfazer();
+        log.info("Operação desfeita");
+    }
+
+    /**
+     * Refaz a última operação desfeita (redo).
+     */
+    public void refazerOperacao() {
+        comandos.refazer();
+        log.info("Operação refeita");
+    }
+
+    /**
+     * Obtém o histórico de comandos executados.
+     *
+     * @param limite Quantidade máxima de comandos a retornar
+     * @return Lista com descrição dos comandos executados
+     */
+    public List<String> obterHistoricoComandos(int limite) {
+        List<String> resultado = new java.util.ArrayList<>();
+        for (subsistemas.comandos.Comando cmd : comandos.getHistoricoLimitado(limite)) {
+            resultado.add(cmd.getTimestamp() + " - " + cmd.getDescricao());
+        }
+        return resultado;
+    }
+
+}
